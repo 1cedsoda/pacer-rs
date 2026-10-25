@@ -190,6 +190,7 @@ Rule factories:
 - `cooldown`
 - `concurrency_limit`
 - `backoff`
+- `gcra` and `gcra_spend` (new)
 - `dedupe`
 - `zoned_window` (new, cargo feature `tz`)
 
@@ -413,6 +414,90 @@ Use cases:
 - retry a failing HTTP request with exponential back-off
 - re-queue a workflow step after each failed attempt
 - flatten retries to a fixed interval when exponential growth is undesirable
+
+### `gcra`
+
+Use when a scope may burst, then is limited to a steady rate: a token bucket
+(generic cell rate algorithm) without a refill task.
+
+```rust,ignore
+gcra(scope, emission_interval_ms: Millis | Fn(&C) -> Millis, burst: u32, get_tat: Fn(&C, &str) -> Option<Millis>)
+gcra_spend(tat: Option<Millis>, now: Millis, emission_interval_ms: Millis) -> Millis
+```
+
+A full bucket allows `burst` cells at once, then one cell every
+`emission_interval_ms`. The only state per scope is its theoretical arrival
+time (TAT); `None` means never seen, a full bucket.
+
+- `tau = emission_interval_ms × (burst − 1)`
+- ready iff `tat.unwrap_or(now) − tau <= now`, otherwise blocked until `tat − tau`
+- after an allowed cell the new TAT is `gcra_spend(tat, now, interval)` =
+  `max(tat.unwrap_or(now), now) + interval`. The pacer is pure, so you store it,
+  atomically together with the check
+- a scope whose stored `tat <= now` is a full bucket and may be dropped
+- default reason `"rate limited (retry in <s>s)"`, the wait rounded up to whole seconds
+- panics if `burst == 0` or the interval is not positive
+
+Keyed HTTP limiter (10 requests per second per IP, bursts of 20), with check and
+spend under the same lock:
+
+```rust
+use std::collections::HashMap;
+use std::sync::Mutex;
+use pacer::{Gcra, Millis, Rule, RuleResult, gcra, gcra_spend};
+
+const INTERVAL_MS: Millis = 100;
+
+struct Hit {
+    ip: String,
+    tat: Option<Millis>,
+}
+
+struct Limiter {
+    rule: Gcra<Hit>,
+    tats: Mutex<HashMap<String, Millis>>,
+}
+
+impl Limiter {
+    fn new() -> Self {
+        let rule = gcra(|h: &Hit| format!("ip:{}", h.ip), INTERVAL_MS, 20, |h: &Hit, _: &str| h.tat);
+        Limiter { rule: rule.named("http"), tats: Mutex::new(HashMap::new()) }
+    }
+
+    /// `Ok(())` to serve the request, `Err(retry_at)` to answer 429.
+    fn hit(&self, ip: &str, now: Millis) -> Result<(), Millis> {
+        let mut tats = self.tats.lock().unwrap();
+        let hit = Hit { ip: ip.to_owned(), tat: tats.get(ip).copied() };
+        match self.rule.check(&hit, now) {
+            RuleResult::Ready => {
+                tats.insert(hit.ip, gcra_spend(hit.tat, now, INTERVAL_MS));
+                Ok(())
+            }
+            RuleResult::Blocked { wait, .. } => Err(wait.at().expect("gcra never blocks forever")),
+        }
+    }
+
+    /// Run periodically: drop keys whose bucket is full again.
+    fn sweep(&self, now: Millis) {
+        self.tats.lock().unwrap().retain(|_, tat| *tat > now);
+    }
+}
+
+let limiter = Limiter::new();
+for _ in 0..20 {
+    assert!(limiter.hit("203.0.113.7", 0).is_ok());
+}
+assert_eq!(limiter.hit("203.0.113.7", 0), Err(100));
+assert!(limiter.hit("203.0.113.7", 100).is_ok());
+limiter.sweep(10_000);
+assert!(limiter.tats.lock().unwrap().is_empty());
+```
+
+Use cases:
+
+- per-IP or per-API-key HTTP rate limits (a drop-in for `governor`'s keyed limiter)
+- outbound API calls with a provider's "N per second, burst M" contract
+- smoothing a queue consumer to a steady rate after an idle period
 
 ### `dedupe`
 
@@ -835,10 +920,11 @@ let permanent_gate = rule_fn("permanent-gate", |c: &Context, _now| {
 Rules are infallible by signature. Invalid input is a programming error and
 panics, just like a throwing rule makes the TypeScript `pacer.check()` throw:
 
-- factory arguments: `limit == 0`, `max == 0`, `base_ms <= 0`, `window_ms <= 0`,
+- factory arguments: `limit == 0`, `max == 0`, `burst == 0`, `base_ms <= 0`, `window_ms <= 0`,
   non-positive or non-finite `multiplier`, `max_ms <= 0`, equal `zoned_window`
   start and end
-- at check time: negative `gap`/`cooldown`/retry delay, `fixed_window` returning a
+- at check time: negative `gap`/`cooldown`/retry delay, a non-positive `gcra`
+  emission interval, `fixed_window` returning a
   `next_open` that is not in the future, an empty `fixed_quota` window
 
 The pacer does not:
@@ -891,6 +977,7 @@ When possible:
 | New: `not_after` | – | deadline rule: `now > deadline` → `Wait::Never` (`"too late"`) |
 | New: `zoned_window` | – (use `Intl` in `fixedWindow`) | local-time window with weekdays and correct DST handling (cargo feature `tz`) |
 | New: `Verdict::next_at` | – | `Ready → Some(now)`, `At(t) → Some(t)`, `Never → None` for driving timers |
+| New: `gcra` | – | token bucket (GCRA) for keyed rate limiters, state is one TAT per scope |
 | `ScopeKey` | branded string type | not ported; scopes are plain `String`/`&str` |
 
 ## Package Philosophy
