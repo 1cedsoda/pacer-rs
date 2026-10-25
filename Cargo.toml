@@ -1,0 +1,12 @@
+[package]
+name = "pacer"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Small, synchronous pacing engine: can I do this now, and if not, when should I retry?"
+license = "MIT"
+repository = "https://github.com/1cedsoda/pacer-rs"
+readme = "README.md"
+keywords = ["rate-limit", "pacing", "quota", "backoff", "scheduling"]
+categories = ["algorithms", "date-and-time"]
+
