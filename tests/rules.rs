@@ -1,12 +1,13 @@
 mod common;
+#[allow(unused_imports)]
+use common::{ms, span};
 
 use std::sync::{Arc, Mutex};
 
 use common::ts;
 use pacer::{
-    Rule, RuleResult, add_ms, backoff, concurrency_limit, cooldown, create_window, dedupe,
-    end_of_day, end_of_hour, fixed_quota, fixed_window, min_gap, not_before, sliding_quota,
-    start_of_day, start_of_hour, to_iso_string,
+    Rule, RuleResult, Time, TimeWindow, backoff, concurrency_limit, cooldown, dedupe, fixed_quota,
+    fixed_window, min_gap, not_before, sliding_quota,
 };
 
 fn blocked(at: &str, reason: &str) -> RuleResult {
@@ -23,7 +24,7 @@ struct Email {
 fn min_gap_blocks_until_the_minimum_gap_has_elapsed() {
     let rule = min_gap(
         |c: &Email| format!("email:{}", c.email),
-        60_000,
+        span(60_000),
         |_: &Email, _: &str| Some(ts("2026-01-01T10:00:30.000Z")),
     );
     let ctx = Email {
@@ -37,7 +38,11 @@ fn min_gap_blocks_until_the_minimum_gap_has_elapsed() {
 
 #[test]
 fn min_gap_returns_ready_when_there_is_no_last_event() {
-    let rule = min_gap(|_: &()| "scope".into(), 60_000, |_: &(), _: &str| None);
+    let rule = min_gap(
+        |_: &()| "scope".into(),
+        span(60_000),
+        |_: &(), _: &str| None,
+    );
     assert_eq!(
         rule.check(&(), ts("2026-01-01T10:01:00.000Z")),
         RuleResult::Ready
@@ -47,11 +52,11 @@ fn min_gap_returns_ready_when_there_is_no_last_event() {
 #[test]
 fn min_gap_accepts_gap_as_a_function_of_context() {
     struct Ctx {
-        delay_ms: i64,
+        delay_ms: u64,
     }
     let rule = min_gap(
         |_: &Ctx| "scope".into(),
-        |c: &Ctx| c.delay_ms,
+        |c: &Ctx| span(c.delay_ms),
         |_: &Ctx, _: &str| Some(ts("2026-01-01T10:00:00.000Z")),
     );
     assert_eq!(
@@ -64,10 +69,10 @@ fn min_gap_accepts_gap_as_a_function_of_context() {
 fn min_gap_passes_the_scope_and_supports_name_and_reason_overrides() {
     let rule = min_gap(
         |c: &Email| format!("email:{}", c.email),
-        1_000,
+        span(1_000),
         |_: &Email, scope: &str| {
             assert_eq!(scope, "email:x");
-            Some(0)
+            Some(ms(0))
         },
     )
     .named("email-min-gap")
@@ -76,16 +81,12 @@ fn min_gap_passes_the_scope_and_supports_name_and_reason_overrides() {
     });
     assert_eq!(rule.name(), "email-min-gap");
     assert_eq!(
-        rule.check(&Email { email: "x".into() }, 500),
-        RuleResult::blocked_until(1_000, "email:x: 500 < 1000 (last 0)")
+        rule.check(&Email { email: "x".into() }, ms(500)),
+        RuleResult::blocked_until(
+            ms(1_000),
+            "email:x: 1970-01-01T00:00:00.500Z < 1970-01-01T00:00:01Z (last 1970-01-01T00:00:00Z)"
+        )
     );
-}
-
-#[test]
-#[should_panic(expected = "gap must be non-negative")]
-fn min_gap_panics_on_negative_gap() {
-    let rule = min_gap(|_: &()| "scope".into(), -1, |_: &(), _: &str| Some(0));
-    rule.check(&(), 0);
 }
 
 // ─── fixed_window ────────────────────────────────────────────────────────────
@@ -121,7 +122,7 @@ fn fixed_window_panics_when_next_open_is_not_in_the_future() {
 // ─── not_before ──────────────────────────────────────────────────────────────
 
 struct Scheduled {
-    retry_at: i64,
+    retry_at: Time,
 }
 
 #[test]
@@ -157,7 +158,7 @@ fn fixed_quota_blocks_until_the_end_of_the_current_fixed_window() {
     let rule = fixed_quota(
         |c: &Email| format!("email:{}", c.email),
         2,
-        |_: &Email, current| create_window(start_of_day(current), end_of_day(current)),
+        |_: &Email, current| TimeWindow::utc_aligned(current, DAY),
         |_: &Email, _: &str, _| 2,
     );
     assert_eq!(
@@ -177,7 +178,7 @@ fn fixed_quota_returns_ready_when_count_is_below_the_limit() {
     let rule = fixed_quota(
         |_: &()| "scope".into(),
         3,
-        |_: &(), current| create_window(start_of_day(current), end_of_day(current)),
+        |_: &(), current| TimeWindow::utc_aligned(current, DAY),
         |_: &(), _: &str, _| 2,
     );
     assert_eq!(rule.check(&(), now), RuleResult::Ready);
@@ -189,10 +190,10 @@ fn fixed_quota_panics_on_empty_window() {
     let rule = fixed_quota(
         |_: &()| "scope".into(),
         1,
-        |_: &(), now| create_window(now, now),
+        |_: &(), now| TimeWindow::new(now, now),
         |_: &(), _: &str, _| 0,
     );
-    rule.check(&(), 0);
+    rule.check(&(), ms(0));
 }
 
 #[test]
@@ -201,7 +202,7 @@ fn fixed_quota_panics_on_zero_limit() {
     let _ = fixed_quota(
         |_: &()| "scope".into(),
         0,
-        |_: &(), now| create_window(now, now + 1),
+        |_: &(), now| TimeWindow::new(now, now + span(1)),
         |_: &(), _: &str, _| 0,
     );
 }
@@ -214,7 +215,7 @@ fn sliding_quota_blocks_until_enough_events_age_out_of_the_rolling_window() {
     let rule = sliding_quota(
         |_: &()| "scope".into(),
         3,
-        60 * 60_000,
+        span(60 * 60_000),
         |_: &(), _: &str, _, _| {
             vec![
                 ts("2026-01-01T10:00:00.000Z"),
@@ -236,7 +237,7 @@ fn sliding_quota_returns_ready_when_fewer_than_the_limit_fall_inside_the_rolling
     let rule = sliding_quota(
         |_: &()| "scope".into(),
         3,
-        60 * 60_000,
+        span(60 * 60_000),
         |_: &(), _: &str, _, _| {
             vec![
                 ts("2026-01-01T09:40:00.000Z"),
@@ -253,7 +254,7 @@ fn sliding_quota_ignores_out_of_window_events_and_sorts() {
     let rule = sliding_quota(
         |_: &()| "scope".into(),
         2,
-        60 * 60_000,
+        span(60 * 60_000),
         |_: &(), _: &str, since, until| {
             assert_eq!(since, ts("2026-01-01T09:50:00.000Z"));
             assert_eq!(until, ts("2026-01-01T10:50:00.000Z"));
@@ -277,7 +278,7 @@ fn sliding_quota_ignores_out_of_window_events_and_sorts() {
 fn cooldown_blocks_until_the_cooldown_expires() {
     let rule = cooldown(
         |_: &()| "scope".into(),
-        5 * 60_000,
+        span(5 * 60_000),
         |_: &(), _: &str| Some(ts("2026-01-01T10:00:00.000Z")),
     );
     assert_eq!(
@@ -288,7 +289,11 @@ fn cooldown_blocks_until_the_cooldown_expires() {
 
 #[test]
 fn cooldown_returns_ready_when_no_failure_has_occurred() {
-    let rule = cooldown(|_: &()| "scope".into(), 5 * 60_000, |_: &(), _: &str| None);
+    let rule = cooldown(
+        |_: &()| "scope".into(),
+        span(5 * 60_000),
+        |_: &(), _: &str| None,
+    );
     assert_eq!(
         rule.check(&(), ts("2026-01-01T10:00:00.000Z")),
         RuleResult::Ready
@@ -302,7 +307,7 @@ fn cooldown_accepts_cooldown_as_a_function_of_context() {
     }
     let rule = cooldown(
         |_: &Ctx| "scope".into(),
-        |c: &Ctx| 1_000 * 2_i64.pow(c.attempts),
+        |c: &Ctx| span(1_000 * 2_u64.pow(c.attempts)),
         |_: &Ctx, _: &str| Some(ts("2026-01-01T10:00:00.000Z")),
     );
     // attempts=3 → cooldown = 1000 * 8 = 8000ms
@@ -318,10 +323,10 @@ fn cooldown_accepts_cooldown_as_a_function_of_context() {
 fn concurrency_limit_blocks_with_a_short_retry_when_the_limit_is_reached() {
     let now = ts("2026-01-01T10:00:00.000Z");
     let rule =
-        concurrency_limit(|_: &()| "scope".into(), 1, |_: &(), _: &str| 1).retry_after_ms(2_500);
+        concurrency_limit(|_: &()| "scope".into(), 1, |_: &(), _: &str| 1).retry_after(span(2_500));
     assert_eq!(
         rule.check(&(), now),
-        RuleResult::blocked_until(add_ms(now, 2_500), "1/1 inflight")
+        RuleResult::blocked_until(now + span(2_500), "1/1 inflight")
     );
 }
 
@@ -340,23 +345,23 @@ fn concurrency_limit_defaults_to_five_seconds_and_supports_retry_fn() {
     let default = concurrency_limit(|_: &()| "scope".into(), 1, |_: &(), _: &str| 3);
     assert_eq!(
         default.check(&(), now),
-        RuleResult::blocked_until(now + 5_000, "3/1 inflight")
+        RuleResult::blocked_until(now + span(5_000), "3/1 inflight")
     );
 
     let dynamic = concurrency_limit(|_: &()| "scope".into(), 1, |_: &(), _: &str| 3)
-        .retry_after_fn(|_, _, _, active| active as i64 * 1_000);
+        .retry_after_fn(|_, _, _, active| span(active * 1_000));
     assert_eq!(
         dynamic.check(&(), now),
-        RuleResult::blocked_until(now + 3_000, "3/1 inflight")
+        RuleResult::blocked_until(now + span(3_000), "3/1 inflight")
     );
 }
 
 // ─── backoff ─────────────────────────────────────────────────────────────────
 
-fn backoff_rule(base_ms: i64, attempts: u32, last: Option<&'static str>) -> pacer::Backoff<()> {
+fn backoff_rule(base_ms: u64, attempts: u32, last: Option<&'static str>) -> pacer::Backoff<()> {
     backoff(
         |_: &()| "scope".into(),
-        base_ms,
+        span(base_ms),
         move |_: &(), _: &str| attempts,
         move |_: &(), _: &str| last.map(ts),
     )
@@ -409,7 +414,7 @@ fn backoff_doubles_the_delay_on_each_successive_attempt() {
 #[test]
 fn backoff_caps_delay_at_max_ms() {
     // uncapped would be 10_000 * 2^4 = 160_000ms; capped at 30_000ms
-    let rule = backoff_rule(10_000, 5, Some("2026-01-01T10:00:00.000Z")).max_ms(30_000);
+    let rule = backoff_rule(10_000, 5, Some("2026-01-01T10:00:00.000Z")).max(span(30_000));
     assert_eq!(
         rule.check(&(), ts("2026-01-01T10:00:20.000Z")),
         blocked(
@@ -459,7 +464,7 @@ fn backoff_rounds_reason_seconds_like_js_math_round() {
 fn backoff_saturates_huge_delays_instead_of_overflowing() {
     let rule = backoff_rule(1_000, u32::MAX, Some("2026-01-01T10:00:00.000Z"));
     match rule.check(&(), ts("2026-01-01T10:00:00.000Z")) {
-        RuleResult::Blocked { wait, .. } => assert_eq!(wait, pacer::Wait::At(i64::MAX)),
+        RuleResult::Blocked { wait, .. } => assert_eq!(wait, pacer::Wait::At(ms(i64::MAX))),
         RuleResult::Ready => panic!("expected blocked"),
     }
 }
@@ -484,7 +489,7 @@ fn dedupe_returns_permanently_blocked_when_already_processed() {
     );
     assert_eq!(
         rule.check(&(), ts("2026-01-01T10:00:00.000Z")),
-        RuleResult::blocked_forever("already processed (2026-01-01T09:00:00.000Z)")
+        RuleResult::blocked_forever("already processed (2026-01-01T09:00:00Z)")
     );
 }
 
@@ -506,60 +511,61 @@ fn dedupe_passes_the_scope_to_get_completed_at() {
     assert_eq!(*seen.lock().unwrap(), ["item:abc"]);
 }
 
-// ─── helpers (UTC) ───────────────────────────────────────────────────────────
+// ─── UTC windows and display ─────────────────────────────────────────────────
 
-fn base() -> i64 {
+const HOUR: std::time::Duration = std::time::Duration::from_secs(3600);
+const DAY: std::time::Duration = std::time::Duration::from_secs(86_400);
+
+fn base() -> Time {
     ts("2026-01-15T14:37:22.456Z") // 14:37 UTC
 }
 
 #[test]
-fn start_of_hour_zeroes_minutes_seconds_ms_in_utc() {
-    assert_eq!(start_of_hour(base()), ts("2026-01-15T14:00:00.000Z"));
-}
-
-#[test]
-fn end_of_hour_is_start_of_the_next_utc_hour() {
-    assert_eq!(end_of_hour(base()), ts("2026-01-15T15:00:00.000Z"));
-}
-
-#[test]
-fn start_of_day_zeroes_h_m_s_ms_in_utc() {
-    assert_eq!(start_of_day(base()), ts("2026-01-15T00:00:00.000Z"));
-}
-
-#[test]
-fn end_of_day_is_midnight_starting_the_next_utc_day() {
-    assert_eq!(end_of_day(base()), ts("2026-01-16T00:00:00.000Z"));
-}
-
-#[test]
-fn end_of_hour_at_exactly_hour_boundary_advances_by_one_hour() {
-    let midnight = ts("2026-01-15T00:00:00.000Z");
-    assert_eq!(end_of_hour(midnight), ts("2026-01-15T01:00:00.000Z"));
-}
-
-#[test]
-fn end_of_day_at_midnight_advances_to_next_midnight() {
-    let midnight = ts("2026-01-15T00:00:00.000Z");
-    assert_eq!(end_of_day(midnight), ts("2026-01-16T00:00:00.000Z"));
-}
-
-#[test]
-fn helpers_handle_times_before_the_epoch() {
-    let t = ts("1969-12-31T23:30:00.000Z");
-    assert_eq!(t, -30 * 60_000);
-    assert_eq!(start_of_day(t), ts("1969-12-31T00:00:00.000Z"));
-    assert_eq!(start_of_hour(t), ts("1969-12-31T23:00:00.000Z"));
-    assert_eq!(end_of_hour(t), 0);
-}
-
-#[test]
-fn to_iso_string_matches_js_to_iso_string() {
-    assert_eq!(to_iso_string(0), "1970-01-01T00:00:00.000Z");
-    assert_eq!(to_iso_string(base()), "2026-01-15T14:37:22.456Z");
+fn utc_hours_and_days_are_aligned_windows() {
+    let hour = TimeWindow::utc_aligned(base(), HOUR);
     assert_eq!(
-        to_iso_string(ts("2024-02-29T23:59:59.999Z")),
+        (hour.start, hour.end),
+        (ts("2026-01-15T14:00:00Z"), ts("2026-01-15T15:00:00Z"))
+    );
+    let day = TimeWindow::utc_aligned(base(), DAY);
+    assert_eq!(
+        (day.start, day.end),
+        (ts("2026-01-15T00:00:00Z"), ts("2026-01-16T00:00:00Z"))
+    );
+    let midnight = ts("2026-01-15T00:00:00Z");
+    assert_eq!(
+        TimeWindow::utc_aligned(midnight, HOUR).end,
+        ts("2026-01-15T01:00:00Z")
+    );
+    assert_eq!(
+        TimeWindow::utc_aligned(midnight, DAY).end,
+        ts("2026-01-16T00:00:00Z")
+    );
+    assert!(day.contains(base()) && !day.contains(day.end));
+    assert_eq!(day.len(), DAY);
+}
+
+#[test]
+fn windows_handle_times_before_the_epoch() {
+    let t = ts("1969-12-31T23:30:00Z");
+    assert_eq!(t, ms(-30 * 60_000));
+    assert_eq!(
+        TimeWindow::utc_aligned(t, DAY).start,
+        ts("1969-12-31T00:00:00Z")
+    );
+    assert_eq!(
+        TimeWindow::utc_aligned(t, HOUR).start,
+        ts("1969-12-31T23:00:00Z")
+    );
+    assert_eq!(TimeWindow::utc_aligned(t, HOUR).end, Time::UNIX_EPOCH);
+}
+
+#[test]
+fn times_display_as_rfc3339() {
+    assert_eq!(Time::UNIX_EPOCH.to_string(), "1970-01-01T00:00:00Z");
+    assert_eq!(base().to_string(), "2026-01-15T14:37:22.456Z");
+    assert_eq!(
+        ts("2024-02-29T23:59:59.999Z").to_string(),
         "2024-02-29T23:59:59.999Z"
     );
-    assert_eq!(to_iso_string(-1), "1969-12-31T23:59:59.999Z");
 }

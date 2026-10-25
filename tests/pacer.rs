@@ -1,7 +1,9 @@
 mod common;
+#[allow(unused_imports)]
+use common::{ms, span};
 
 use common::{blocked_rule, ready_rule, ts};
-use pacer::{Block, Millis, Pacer, Rule, RuleResult, Verdict, Wait, rule_fn};
+use pacer::{Block, Pacer, Rule, RuleResult, Time, Verdict, Wait, rule_fn};
 
 #[test]
 fn returns_ready_when_every_rule_is_ready() {
@@ -60,7 +62,7 @@ fn supports_closure_and_struct_rules_together() {
         fn name(&self) -> &str {
             "struct"
         }
-        fn check(&self, _: &(), _: Millis) -> RuleResult {
+        fn check(&self, _: &(), _: Time) -> RuleResult {
             RuleResult::blocked_until(ts("2026-01-01T10:03:00.000Z"), "struct block")
         }
     }
@@ -124,7 +126,7 @@ fn returns_never_when_any_rule_is_permanently_blocked() {
 #[test]
 fn empty_pacer_is_ready() {
     let pacer: Pacer<()> = Pacer::new(vec![]);
-    assert_eq!(pacer.check(&(), 0), Verdict::Ready);
+    assert_eq!(pacer.check(&(), ms(0)), Verdict::Ready);
 }
 
 #[test]
@@ -133,10 +135,10 @@ fn next_at_maps_verdicts_to_timer_targets() {
     assert_eq!(Verdict::Ready.next_at(now), Some(now));
 
     let at = Verdict::Blocked {
-        wait: Wait::At(now + 5_000),
+        wait: Wait::At(now + span(5_000)),
         blocks: vec![],
     };
-    assert_eq!(at.next_at(now), Some(now + 5_000));
+    assert_eq!(at.next_at(now), Some(now + span(5_000)));
 
     let never = Verdict::Blocked {
         wait: Wait::Never,
@@ -151,9 +153,9 @@ fn works_with_unsized_contexts() {
         if ctx.len() < 3 {
             RuleResult::Ready
         } else {
-            RuleResult::blocked_until(now + 1, "too long")
+            RuleResult::blocked_until(now + span(1), "too long")
         }
     }))]);
-    assert!(pacer.check("ab", 0).is_ready());
-    assert_eq!(pacer.check("abc", 0).next_at(0), Some(1));
+    assert!(pacer.check("ab", ms(0)).is_ready());
+    assert_eq!(pacer.check("abc", ms(0)).next_at(ms(0)), Some(ms(1)));
 }

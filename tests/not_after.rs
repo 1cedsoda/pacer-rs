@@ -1,10 +1,12 @@
 mod common;
+#[allow(unused_imports)]
+use common::{ms, span};
 
 use common::ts;
-use pacer::{Pacer, Rule, RuleResult, Verdict, Wait, not_after, not_before};
+use pacer::{Pacer, Rule, RuleResult, Time, Verdict, Wait, not_after, not_before};
 
 struct Job {
-    deadline: Option<i64>,
+    deadline: Option<Time>,
 }
 
 #[test]
@@ -43,7 +45,7 @@ fn not_after_blocks_forever_after_the_deadline() {
             &Job {
                 deadline: Some(deadline)
             },
-            deadline + 1
+            deadline + span(1)
         ),
         RuleResult::blocked_forever("too late")
     );
@@ -53,7 +55,7 @@ fn not_after_blocks_forever_after_the_deadline() {
 fn not_after_without_deadline_is_ready() {
     let rule = not_after(|j: &Job| j.deadline);
     assert_eq!(
-        rule.check(&Job { deadline: None }, i64::MAX),
+        rule.check(&Job { deadline: None }, ms(i64::MAX)),
         RuleResult::Ready
     );
 }
@@ -62,14 +64,14 @@ fn not_after_without_deadline_is_ready() {
 fn not_after_supports_name_and_reason_overrides() {
     let rule = not_after(|j: &Job| j.deadline)
         .named("offer-expiry")
-        .with_reason_fn(|_, now, deadline| format!("{}ms late", now - deadline));
+        .with_reason_fn(|_, now, deadline| format!("{}ms late", now.since(deadline).as_millis()));
     assert_eq!(rule.name(), "offer-expiry");
     assert_eq!(
         rule.check(
             &Job {
-                deadline: Some(100)
+                deadline: Some(ms(100))
             },
-            150
+            ms(150)
         ),
         RuleResult::blocked_forever("50ms late")
     );
@@ -82,8 +84,8 @@ fn not_after_never_overrides_a_timed_block_in_the_pacer() {
         deadline: i64,
     }
     let pacer: Pacer<Ctx> = Pacer::new(vec![
-        Box::new(not_before(|c: &Ctx| c.start)),
-        Box::new(not_after(|c: &Ctx| Some(c.deadline))),
+        Box::new(not_before(|c: &Ctx| ms(c.start))),
+        Box::new(not_after(|c: &Ctx| Some(ms(c.deadline)))),
     ]);
     // Start in the future but deadline already passed: never.
     let verdict = pacer.check(
@@ -91,10 +93,10 @@ fn not_after_never_overrides_a_timed_block_in_the_pacer() {
             start: 200,
             deadline: 50,
         },
-        100,
+        ms(100),
     );
     assert_eq!(verdict.wait(), Some(Wait::Never));
-    assert_eq!(verdict.next_at(100), None);
+    assert_eq!(verdict.next_at(ms(100)), None);
     assert_eq!(verdict.blocks().len(), 2);
 
     // Inside [start, deadline]: ready.
@@ -104,7 +106,7 @@ fn not_after_never_overrides_a_timed_block_in_the_pacer() {
                 start: 50,
                 deadline: 200
             },
-            100
+            ms(100)
         ),
         Verdict::Ready
     );

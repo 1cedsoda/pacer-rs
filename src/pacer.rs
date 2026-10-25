@@ -1,4 +1,6 @@
-use crate::types::{Block, Millis, Rule, RuleResult, Verdict, Wait};
+use crate::clock::Clock;
+use crate::time::Time;
+use crate::types::{Block, Rule, RuleResult, Verdict, Wait};
 
 /// The engine that aggregates rules. Stateless: the same rules, context and
 /// `now` always produce the same verdict.
@@ -19,7 +21,7 @@ impl<C: ?Sized> Pacer<C> {
 
     /// Run every rule and combine the blocks: the latest `At` wins, `Never`
     /// wins over any `At`.
-    pub fn check(&self, ctx: &C, now: Millis) -> Verdict {
+    pub fn check(&self, ctx: &C, now: Time) -> Verdict {
         let blocks: Vec<Block> = self
             .rules
             .iter()
@@ -37,6 +39,14 @@ impl<C: ?Sized> Pacer<C> {
             None => Verdict::Ready,
             Some(wait) => Verdict::Blocked { wait, blocks },
         }
+    }
+}
+
+impl<C: ?Sized> Pacer<C> {
+    /// [`Pacer::check`] at `clock`'s now: for the edge of a program. Inside
+    /// a process or a test, pass the time you were given.
+    pub fn check_now(&self, ctx: &C, clock: &dyn Clock) -> Verdict {
+        self.check(ctx, clock.now())
     }
 }
 

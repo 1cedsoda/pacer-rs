@@ -1,54 +1,57 @@
 use super::{Reason, ScopeFn, builder_methods};
-use crate::types::{Millis, Rule, RuleResult};
+use std::time::Duration;
 
-type EventsFn<C> = dyn Fn(&C, &str, Millis, Millis) -> Vec<Millis> + Send + Sync;
-type ReasonFn<C> = dyn Fn(&C, Millis, Millis, &str, usize, Millis) -> String + Send + Sync;
+use crate::time::Time;
+use crate::types::{Rule, RuleResult};
+
+type EventsFn<C> = dyn Fn(&C, &str, Time, Time) -> Vec<Time> + Send + Sync;
+type ReasonFn<C> = dyn Fn(&C, Time, Time, &str, usize, Time) -> String + Send + Sync;
 
 /// Quota over a rolling window. Build with [`sliding_quota`].
 pub struct SlidingQuota<C: ?Sized> {
     name: String,
     scope: ScopeFn<C>,
     limit: usize,
-    window_ms: Millis,
+    window: Duration,
     get_event_times: Box<EventsFn<C>>,
     reason: Reason<ReasonFn<C>>,
 }
 
-/// At most `limit` events in any rolling `window_ms`.
+/// At most `limit` events in any rolling `window`.
 ///
 /// `get_event_times(ctx, scope, since, until)` is called with
-/// `since = now - window_ms`, `until = now`; events outside `(since, now]` are
+/// `since = now - window`, `until = now`; events outside `(since, now]` are
 /// ignored, order does not matter. When `count >= limit`, blocks until the
-/// `limit`-th newest event ages out: `events[count - limit] + window_ms`.
+/// `limit`-th newest event ages out: `events[count - limit] + window`.
 ///
-/// Panics if `limit == 0` or `window_ms <= 0`. Default name `"sliding-quota"`,
+/// Panics if `limit == 0` or `window` is zero. Default name `"sliding-quota"`,
 /// default reason `"sliding quota exhausted (<count>/<limit>)"`. Reason closure
 /// args: `(ctx, now, retry_at, scope, count, oldest_blocking_event)`.
 pub fn sliding_quota<C, S, G>(
     scope: S,
     limit: usize,
-    window_ms: Millis,
+    window: Duration,
     get_event_times: G,
 ) -> SlidingQuota<C>
 where
     C: ?Sized,
     S: Fn(&C) -> String + Send + Sync + 'static,
-    G: Fn(&C, &str, Millis, Millis) -> Vec<Millis> + Send + Sync + 'static,
+    G: Fn(&C, &str, Time, Time) -> Vec<Time> + Send + Sync + 'static,
 {
     assert!(limit > 0, "limit must be positive");
-    assert!(window_ms > 0, "window_ms must be positive");
+    assert!(!window.is_zero(), "window must be positive");
     SlidingQuota {
         name: "sliding-quota".to_owned(),
         scope: Box::new(scope),
         limit,
-        window_ms,
+        window,
         get_event_times: Box::new(get_event_times),
         reason: Reason::Default,
     }
 }
 
 impl<C: ?Sized> SlidingQuota<C> {
-    builder_methods!(&C, Millis, Millis, &str, usize, Millis);
+    builder_methods!(&C, Time, Time, &str, usize, Time);
 }
 
 impl<C: ?Sized> Rule<C> for SlidingQuota<C> {
@@ -56,10 +59,10 @@ impl<C: ?Sized> Rule<C> for SlidingQuota<C> {
         &self.name
     }
 
-    fn check(&self, ctx: &C, now: Millis) -> RuleResult {
+    fn check(&self, ctx: &C, now: Time) -> RuleResult {
         let scope = (self.scope)(ctx);
-        let since = now - self.window_ms;
-        let mut events: Vec<Millis> = (self.get_event_times)(ctx, &scope, since, now)
+        let since = now - self.window;
+        let mut events: Vec<Time> = (self.get_event_times)(ctx, &scope, since, now)
             .into_iter()
             .filter(|&t| t > since && t <= now)
             .collect();
@@ -69,7 +72,7 @@ impl<C: ?Sized> Rule<C> for SlidingQuota<C> {
         events.sort_unstable();
         let count = events.len();
         let oldest_blocking = events[count - self.limit];
-        let retry_at = oldest_blocking + self.window_ms;
+        let retry_at = oldest_blocking + self.window;
         RuleResult::blocked_until(
             retry_at,
             self.reason.resolve(

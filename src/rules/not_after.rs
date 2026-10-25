@@ -1,8 +1,9 @@
 use super::{Reason, builder_methods};
-use crate::types::{Millis, Rule, RuleResult};
+use crate::time::Time;
+use crate::types::{Rule, RuleResult};
 
-type DeadlineFn<C> = dyn Fn(&C) -> Option<Millis> + Send + Sync;
-type ReasonFn<C> = dyn Fn(&C, Millis, Millis) -> String + Send + Sync;
+type DeadlineFn<C> = dyn Fn(&C) -> Option<Time> + Send + Sync;
+type ReasonFn<C> = dyn Fn(&C, Time, Time) -> String + Send + Sync;
 
 /// Never act after a deadline. Build with [`not_after`].
 pub struct NotAfter<C: ?Sized> {
@@ -20,7 +21,7 @@ pub struct NotAfter<C: ?Sized> {
 pub fn not_after<C, D>(get_deadline: D) -> NotAfter<C>
 where
     C: ?Sized,
-    D: Fn(&C) -> Option<Millis> + Send + Sync + 'static,
+    D: Fn(&C) -> Option<Time> + Send + Sync + 'static,
 {
     NotAfter {
         name: "not-after".to_owned(),
@@ -30,7 +31,7 @@ where
 }
 
 impl<C: ?Sized> NotAfter<C> {
-    builder_methods!(&C, Millis, Millis);
+    builder_methods!(&C, Time, Time);
 }
 
 impl<C: ?Sized> Rule<C> for NotAfter<C> {
@@ -38,7 +39,7 @@ impl<C: ?Sized> Rule<C> for NotAfter<C> {
         &self.name
     }
 
-    fn check(&self, ctx: &C, now: Millis) -> RuleResult {
+    fn check(&self, ctx: &C, now: Time) -> RuleResult {
         match (self.get_deadline)(ctx) {
             Some(deadline) if now > deadline => RuleResult::blocked_forever(
                 self.reason

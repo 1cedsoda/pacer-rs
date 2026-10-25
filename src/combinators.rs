@@ -1,4 +1,5 @@
-use crate::types::{Millis, Rule, RuleResult, Wait};
+use crate::time::Time;
+use crate::types::{Rule, RuleResult, Wait};
 
 /// A rule with a prefixed name. Produced by [`group`].
 pub struct Named<C: ?Sized> {
@@ -10,7 +11,7 @@ impl<C: ?Sized> Rule<C> for Named<C> {
     fn name(&self) -> &str {
         &self.name
     }
-    fn check(&self, ctx: &C, now: Millis) -> RuleResult {
+    fn check(&self, ctx: &C, now: Time) -> RuleResult {
         self.inner.check(ctx, now)
     }
 }
@@ -52,7 +53,7 @@ impl<C: ?Sized> Rule<C> for AllOf<C> {
         &self.name
     }
 
-    fn check(&self, ctx: &C, now: Millis) -> RuleResult {
+    fn check(&self, ctx: &C, now: Time) -> RuleResult {
         let waits: Vec<Wait> = self
             .rules
             .iter()
@@ -92,7 +93,7 @@ impl<C: ?Sized> Rule<C> for AnyOf<C> {
         &self.name
     }
 
-    fn check(&self, ctx: &C, now: Millis) -> RuleResult {
+    fn check(&self, ctx: &C, now: Time) -> RuleResult {
         if self.rules.is_empty() {
             return RuleResult::Ready;
         }

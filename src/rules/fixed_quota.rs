@@ -1,9 +1,10 @@
 use super::{Reason, ScopeFn, builder_methods};
-use crate::types::{Millis, Rule, RuleResult, TimeWindow};
+use crate::time::Time;
+use crate::types::{Rule, RuleResult, TimeWindow};
 
-type WindowFn<C> = dyn Fn(&C, Millis) -> TimeWindow + Send + Sync;
+type WindowFn<C> = dyn Fn(&C, Time) -> TimeWindow + Send + Sync;
 type CountFn<C> = dyn Fn(&C, &str, TimeWindow) -> u64 + Send + Sync;
-type ReasonFn<C> = dyn Fn(&C, Millis, Millis, &str, u64, TimeWindow) -> String + Send + Sync;
+type ReasonFn<C> = dyn Fn(&C, Time, Time, &str, u64, TimeWindow) -> String + Send + Sync;
 
 /// Quota that resets on fixed boundaries. Build with [`fixed_quota`].
 pub struct FixedQuota<C: ?Sized> {
@@ -26,7 +27,7 @@ pub fn fixed_quota<C, S, W, G>(scope: S, limit: u64, window: W, get_count: G) ->
 where
     C: ?Sized,
     S: Fn(&C) -> String + Send + Sync + 'static,
-    W: Fn(&C, Millis) -> TimeWindow + Send + Sync + 'static,
+    W: Fn(&C, Time) -> TimeWindow + Send + Sync + 'static,
     G: Fn(&C, &str, TimeWindow) -> u64 + Send + Sync + 'static,
 {
     assert!(limit > 0, "limit must be positive");
@@ -41,7 +42,7 @@ where
 }
 
 impl<C: ?Sized> FixedQuota<C> {
-    builder_methods!(&C, Millis, Millis, &str, u64, TimeWindow);
+    builder_methods!(&C, Time, Time, &str, u64, TimeWindow);
 }
 
 impl<C: ?Sized> Rule<C> for FixedQuota<C> {
@@ -49,7 +50,7 @@ impl<C: ?Sized> Rule<C> for FixedQuota<C> {
         &self.name
     }
 
-    fn check(&self, ctx: &C, now: Millis) -> RuleResult {
+    fn check(&self, ctx: &C, now: Time) -> RuleResult {
         let scope = (self.scope)(ctx);
         let window = (self.window)(ctx, now);
         assert!(

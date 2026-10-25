@@ -1,4 +1,6 @@
 mod common;
+#[allow(unused_imports)]
+use common::{ms, span};
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -77,7 +79,7 @@ fn any_of_evaluates_every_branch() {
         "par",
         vec![tracked("a"), tracked("b"), tracked("c")],
     )) as Box<dyn pacer::Rule<()>>]);
-    pacer.check(&(), 0);
+    pacer.check(&(), ms(0));
 
     let mut seen = order.lock().unwrap().clone();
     seen.sort();
@@ -121,7 +123,7 @@ fn any_of_returns_earliest_concrete_retry_at_when_only_some_branches_are_permane
 #[test]
 fn any_of_with_no_branches_is_ready() {
     let rule = any_of::<()>("empty", vec![]);
-    assert_eq!(pacer::Rule::check(&rule, &(), 0), RuleResult::Ready);
+    assert_eq!(pacer::Rule::check(&rule, &(), ms(0)), RuleResult::Ready);
 }
 
 // ─── all_of ──────────────────────────────────────────────────────────────────
@@ -182,7 +184,7 @@ fn all_of_is_ready_when_every_child_is_ready() {
             })),
         ],
     );
-    assert_eq!(pacer::Rule::check(&rule, &(), 0), RuleResult::Ready);
+    assert_eq!(pacer::Rule::check(&rule, &(), ms(0)), RuleResult::Ready);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 

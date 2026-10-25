@@ -1,30 +1,31 @@
-use super::{Reason, ScopeFn, assert_non_negative, builder_methods};
-use crate::types::{Millis, MillisFn, Rule, RuleResult};
+use super::{Reason, ScopeFn, builder_methods};
+use crate::time::Time;
+use crate::types::{Rule, RuleResult, SpanFn};
 
-type LastFn<C> = dyn Fn(&C, &str) -> Option<Millis> + Send + Sync;
-type ReasonFn<C> = dyn Fn(&C, Millis, Millis, &str, Millis) -> String + Send + Sync;
+type LastFn<C> = dyn Fn(&C, &str) -> Option<Time> + Send + Sync;
+type ReasonFn<C> = dyn Fn(&C, Time, Time, &str, Time) -> String + Send + Sync;
 
 /// Pause a scope after a failure. Build with [`cooldown`].
 pub struct Cooldown<C: ?Sized> {
     name: String,
     scope: ScopeFn<C>,
-    cooldown: Box<dyn MillisFn<C>>,
+    cooldown: Box<dyn SpanFn<C>>,
     get_last_failure_time: Box<LastFn<C>>,
     reason: Reason<ReasonFn<C>>,
 }
 
 /// Block until `last_failure_time + cooldown`. No failure → ready.
 ///
-/// `cooldown` is a constant [`Millis`] or `Fn(&C) -> Millis` (e.g. exponential
-/// back-off on an attempt counter); it must be non-negative (panics otherwise).
+/// `cooldown` is a constant [`Duration`](std::time::Duration) or `Fn(&C) -> Duration` (e.g. exponential
+/// back-off on an attempt counter).
 /// Default name `"cooldown"`, default reason `"cooldown is still active"`.
 /// Reason closure args: `(ctx, now, retry_at, scope, last_failure_time)`.
 pub fn cooldown<C, S, G, L>(scope: S, cooldown: G, get_last_failure_time: L) -> Cooldown<C>
 where
     C: ?Sized,
     S: Fn(&C) -> String + Send + Sync + 'static,
-    G: MillisFn<C> + 'static,
-    L: Fn(&C, &str) -> Option<Millis> + Send + Sync + 'static,
+    G: SpanFn<C> + 'static,
+    L: Fn(&C, &str) -> Option<Time> + Send + Sync + 'static,
 {
     Cooldown {
         name: "cooldown".to_owned(),
@@ -36,7 +37,7 @@ where
 }
 
 impl<C: ?Sized> Cooldown<C> {
-    builder_methods!(&C, Millis, Millis, &str, Millis);
+    builder_methods!(&C, Time, Time, &str, Time);
 }
 
 impl<C: ?Sized> Rule<C> for Cooldown<C> {
@@ -44,8 +45,8 @@ impl<C: ?Sized> Rule<C> for Cooldown<C> {
         &self.name
     }
 
-    fn check(&self, ctx: &C, now: Millis) -> RuleResult {
-        let cooldown = assert_non_negative(self.cooldown.millis(ctx), "cooldown");
+    fn check(&self, ctx: &C, now: Time) -> RuleResult {
+        let cooldown = self.cooldown.span(ctx);
         let scope = (self.scope)(ctx);
         let Some(last) = (self.get_last_failure_time)(ctx, &scope) else {
             return RuleResult::Ready;

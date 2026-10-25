@@ -1,9 +1,12 @@
-use super::{Reason, ScopeFn, assert_non_negative, builder_methods};
-use crate::types::{Millis, Rule, RuleResult};
+use std::time::Duration;
+
+use super::{Reason, ScopeFn, builder_methods};
+use crate::time::Time;
+use crate::types::{Rule, RuleResult};
 
 type CountFn<C> = dyn Fn(&C, &str) -> u64 + Send + Sync;
-type RetryFn<C> = dyn Fn(&C, Millis, &str, u64) -> Millis + Send + Sync;
-type ReasonFn<C> = dyn Fn(&C, Millis, Millis, &str, u64) -> String + Send + Sync;
+type RetryFn<C> = dyn Fn(&C, Time, &str, u64) -> Duration + Send + Sync;
+type ReasonFn<C> = dyn Fn(&C, Time, Time, &str, u64) -> String + Send + Sync;
 
 /// Limit inflight actions per scope. Build with [`concurrency_limit`].
 pub struct ConcurrencyLimit<C: ?Sized> {
@@ -16,10 +19,10 @@ pub struct ConcurrencyLimit<C: ?Sized> {
 }
 
 /// Ready while `get_inflight_count(ctx, scope) < max`; otherwise blocked until
-/// `now + retry_after` (default 5 000 ms, see [`ConcurrencyLimit::retry_after_ms`]
+/// `now + retry_after` (default 5 s, see [`ConcurrencyLimit::retry_after`]
 /// and [`ConcurrencyLimit::retry_after_fn`]).
 ///
-/// Panics if `max == 0` or the retry delay is negative. Default name
+/// Panics if `max == 0`. Default name
 /// `"concurrency-limit"`, default reason `"<active>/<max> inflight"`. Reason
 /// closure args: `(ctx, now, retry_at, scope, active)`.
 pub fn concurrency_limit<C, S, G>(scope: S, max: u64, get_inflight_count: G) -> ConcurrencyLimit<C>
@@ -34,25 +37,24 @@ where
         scope: Box::new(scope),
         max,
         get_inflight_count: Box::new(get_inflight_count),
-        retry_after: Box::new(|_, _, _, _| 5_000),
+        retry_after: Box::new(|_, _, _, _| Duration::from_secs(5)),
         reason: Reason::Default,
     }
 }
 
 impl<C: ?Sized> ConcurrencyLimit<C> {
-    builder_methods!(&C, Millis, Millis, &str, u64);
+    builder_methods!(&C, Time, Time, &str, u64);
 
-    /// Retry after a constant delay (panics if negative).
-    pub fn retry_after_ms(mut self, ms: Millis) -> Self {
-        assert_non_negative(ms, "retry_after_ms");
-        self.retry_after = Box::new(move |_, _, _, _| ms);
+    /// Retry after a constant delay.
+    pub fn retry_after(mut self, delay: Duration) -> Self {
+        self.retry_after = Box::new(move |_, _, _, _| delay);
         self
     }
 
     /// Compute the retry delay from `(ctx, now, scope, active)`.
     pub fn retry_after_fn<F>(mut self, f: F) -> Self
     where
-        F: Fn(&C, Millis, &str, u64) -> Millis + Send + Sync + 'static,
+        F: Fn(&C, Time, &str, u64) -> Duration + Send + Sync + 'static,
     {
         self.retry_after = Box::new(f);
         self
@@ -64,15 +66,13 @@ impl<C: ?Sized> Rule<C> for ConcurrencyLimit<C> {
         &self.name
     }
 
-    fn check(&self, ctx: &C, now: Millis) -> RuleResult {
+    fn check(&self, ctx: &C, now: Time) -> RuleResult {
         let scope = (self.scope)(ctx);
         let active = (self.get_inflight_count)(ctx, &scope);
         if active < self.max {
             return RuleResult::Ready;
         }
-        let retry_after =
-            assert_non_negative((self.retry_after)(ctx, now, &scope, active), "retry_after");
-        let retry_at = now.saturating_add(retry_after);
+        let retry_at = now.saturating_add((self.retry_after)(ctx, now, &scope, active));
         RuleResult::blocked_until(
             retry_at,
             self.reason.resolve(

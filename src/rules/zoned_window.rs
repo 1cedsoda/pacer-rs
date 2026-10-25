@@ -1,10 +1,8 @@
-use chrono::{
-    DateTime, Datelike, Days, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Weekday,
-};
-use chrono_tz::Tz;
+use jiff::civil::{Date, DateTime, Time as LocalTime, Weekday};
+use jiff::tz::TimeZone;
 
-use crate::helpers::DAY_MS;
-use crate::types::{Millis, Rule, RuleResult, Wait};
+use crate::time::Time;
+use crate::types::{Rule, RuleResult, Wait};
 
 /// Open between a local start and end time of day in an IANA time zone,
 /// optionally only on some weekdays. Build with [`zoned_window`].
@@ -13,9 +11,9 @@ use crate::types::{Millis, Rule, RuleResult, Wait};
 #[derive(Debug, Clone)]
 pub struct ZonedWindow {
     name: String,
-    tz: Tz,
-    start: NaiveTime,
-    end: NaiveTime,
+    tz: TimeZone,
+    start: LocalTime,
+    end: LocalTime,
     weekdays: [bool; 7],
     reason: String,
 }
@@ -35,20 +33,17 @@ pub struct ZonedWindow {
 /// `"outside zoned window"`.
 ///
 /// ```
-/// use chrono::{NaiveTime, Weekday::*};
-/// use pacer::zoned_window;
+/// use pacer::tz::{LocalTime, Weekday::*, zone};
+/// use pacer::{Time, zoned_window};
 ///
-/// let office = zoned_window(
-///     chrono_tz::Europe::Berlin,
-///     NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
-///     NaiveTime::from_hms_opt(20, 0, 0).unwrap(),
-/// )
-/// .on_weekdays([Mon, Tue, Wed, Thu, Fri]);
+/// let office = zoned_window(zone("Europe/Berlin"), LocalTime::constant(9, 0, 0, 0), LocalTime::constant(20, 0, 0, 0))
+///     .on_weekdays([Monday, Tuesday, Wednesday, Thursday, Friday]);
 ///
-/// // Saturday 2026-10-24 12:00 CEST → Monday 2026-10-26 09:00 CET (after the DST switch).
-/// assert_eq!(office.next_open(1_792_836_000_000), Some(1_793_001_600_000));
+/// // Saturday 12:00 CEST → Monday 09:00 CET (after the DST switch).
+/// let saturday: Time = "2026-10-24T10:00:00Z".parse().unwrap();
+/// assert_eq!(office.next_open(saturday), Some("2026-10-26T08:00:00Z".parse().unwrap()));
 /// ```
-pub fn zoned_window(tz: Tz, start: NaiveTime, end: NaiveTime) -> ZonedWindow {
+pub fn zoned_window(tz: TimeZone, start: LocalTime, end: LocalTime) -> ZonedWindow {
     assert!(start != end, "zoned_window start and end must differ");
     ZonedWindow {
         name: "zoned-window".to_owned(),
@@ -77,15 +72,15 @@ impl ZonedWindow {
     pub fn on_weekdays<I: IntoIterator<Item = Weekday>>(mut self, days: I) -> Self {
         self.weekdays = [false; 7];
         for day in days {
-            self.weekdays[day.num_days_from_monday() as usize] = true;
+            self.weekdays[day.to_monday_zero_offset() as usize] = true;
         }
         self
     }
 
     /// Whether the window is open at `now`.
-    pub fn is_open(&self, now: Millis) -> bool {
-        let today = self.local(now).date();
-        [today.pred_opt(), Some(today)]
+    pub fn is_open(&self, now: Time) -> bool {
+        let today = crate::tz::local(&self.tz, now).date();
+        [today.yesterday().ok(), Some(today)]
             .into_iter()
             .flatten()
             .filter(|d| self.allowed(*d))
@@ -94,61 +89,31 @@ impl ZonedWindow {
 
     /// The next opening instant strictly after `now`, or `None` if no weekday
     /// is allowed.
-    pub fn next_open(&self, now: Millis) -> Option<Millis> {
-        let today = self.local(now).date();
-        let first = today.pred_opt().unwrap_or(today);
+    pub fn next_open(&self, now: Time) -> Option<Time> {
+        let today = crate::tz::local(&self.tz, now).date();
+        let first = today.yesterday().unwrap_or(today);
         (0..=9)
-            .filter_map(|i| first.checked_add_days(Days::new(i)))
+            .filter_map(|i| first.checked_add(jiff::Span::new().days(i)).ok())
             .filter(|d| self.allowed(*d))
             .map(|d| self.open_at(d))
             .find(|&open| open > now)
     }
 
-    fn allowed(&self, date: NaiveDate) -> bool {
-        self.weekdays[date.weekday().num_days_from_monday() as usize]
+    fn allowed(&self, date: Date) -> bool {
+        self.weekdays[date.weekday().to_monday_zero_offset() as usize]
     }
 
-    fn open_at(&self, date: NaiveDate) -> Millis {
-        self.to_utc(date.and_time(self.start))
+    fn open_at(&self, date: Date) -> Time {
+        crate::tz::instant(&self.tz, DateTime::from_parts(date, self.start))
     }
 
-    fn close_at(&self, date: NaiveDate) -> Millis {
+    fn close_at(&self, date: Date) -> Time {
         let close_date = if self.end > self.start {
             date
         } else {
-            date.succ_opt().expect("date out of range")
+            date.tomorrow().expect("date out of range")
         };
-        self.to_utc(close_date.and_time(self.end))
-    }
-
-    fn local(&self, t: Millis) -> NaiveDateTime {
-        DateTime::from_timestamp_millis(t)
-            .expect("timestamp out of range")
-            .with_timezone(&self.tz)
-            .naive_local()
-    }
-
-    /// Earliest instant whose local wall time is `>= naive`.
-    fn to_utc(&self, naive: NaiveDateTime) -> Millis {
-        match self.tz.from_local_datetime(&naive) {
-            LocalResult::Single(dt) => dt.timestamp_millis(),
-            LocalResult::Ambiguous(a, b) => a.timestamp_millis().min(b.timestamp_millis()),
-            LocalResult::None => {
-                // Gap: binary-search the transition instant. Invariant:
-                // local(lo) < naive <= local(hi).
-                let guess = naive.and_utc().timestamp_millis();
-                let (mut lo, mut hi) = (guess - DAY_MS, guess + DAY_MS);
-                while hi - lo > 1 {
-                    let mid = lo + (hi - lo) / 2;
-                    if self.local(mid) >= naive {
-                        hi = mid;
-                    } else {
-                        lo = mid;
-                    }
-                }
-                hi
-            }
-        }
+        crate::tz::instant(&self.tz, DateTime::from_parts(close_date, self.end))
     }
 }
 
@@ -157,7 +122,7 @@ impl<C: ?Sized> Rule<C> for ZonedWindow {
         &self.name
     }
 
-    fn check(&self, _ctx: &C, now: Millis) -> RuleResult {
+    fn check(&self, _ctx: &C, now: Time) -> RuleResult {
         if self.is_open(now) {
             return RuleResult::Ready;
         }

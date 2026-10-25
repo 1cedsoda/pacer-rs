@@ -1,9 +1,10 @@
 use super::{Reason, builder_methods};
-use crate::types::{Millis, Rule, RuleResult};
+use crate::time::Time;
+use crate::types::{Rule, RuleResult};
 
-type IsOpenFn<C> = dyn Fn(&C, Millis) -> bool + Send + Sync;
-type NextOpenFn<C> = dyn Fn(&C, Millis) -> Millis + Send + Sync;
-type ReasonFn<C> = dyn Fn(&C, Millis, Millis) -> String + Send + Sync;
+type IsOpenFn<C> = dyn Fn(&C, Time) -> bool + Send + Sync;
+type NextOpenFn<C> = dyn Fn(&C, Time) -> Time + Send + Sync;
+type ReasonFn<C> = dyn Fn(&C, Time, Time) -> String + Send + Sync;
 
 /// Allow actions only inside a known window. Build with [`fixed_window`].
 pub struct FixedWindow<C: ?Sized> {
@@ -23,8 +24,8 @@ pub struct FixedWindow<C: ?Sized> {
 pub fn fixed_window<C, O, N>(is_open: O, next_open: N) -> FixedWindow<C>
 where
     C: ?Sized,
-    O: Fn(&C, Millis) -> bool + Send + Sync + 'static,
-    N: Fn(&C, Millis) -> Millis + Send + Sync + 'static,
+    O: Fn(&C, Time) -> bool + Send + Sync + 'static,
+    N: Fn(&C, Time) -> Time + Send + Sync + 'static,
 {
     FixedWindow {
         name: "fixed-window".to_owned(),
@@ -35,7 +36,7 @@ where
 }
 
 impl<C: ?Sized> FixedWindow<C> {
-    builder_methods!(&C, Millis, Millis);
+    builder_methods!(&C, Time, Time);
 }
 
 impl<C: ?Sized> Rule<C> for FixedWindow<C> {
@@ -43,7 +44,7 @@ impl<C: ?Sized> Rule<C> for FixedWindow<C> {
         &self.name
     }
 
-    fn check(&self, ctx: &C, now: Millis) -> RuleResult {
+    fn check(&self, ctx: &C, now: Time) -> RuleResult {
         if (self.is_open)(ctx, now) {
             return RuleResult::Ready;
         }

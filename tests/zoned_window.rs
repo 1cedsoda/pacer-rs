@@ -1,18 +1,24 @@
 #![cfg(feature = "tz")]
 
 mod common;
+#[allow(unused_imports)]
+use common::{ms, span};
 
-use chrono::{NaiveTime, Weekday};
-use chrono_tz::Europe::Berlin;
 use common::ts;
+use pacer::tz::{LocalTime, TimeZone, Weekday, zone};
 use pacer::{Rule, RuleResult, Wait, ZonedWindow, zoned_window};
 
-fn hm(h: u32, m: u32) -> NaiveTime {
-    NaiveTime::from_hms_opt(h, m, 0).unwrap()
+fn hm(h: i8, m: i8) -> LocalTime {
+    LocalTime::new(h, m, 0, 0).unwrap()
+}
+
+#[allow(non_snake_case)]
+fn Berlin() -> TimeZone {
+    zone("Europe/Berlin")
 }
 
 fn business_hours() -> ZonedWindow {
-    zoned_window(Berlin, hm(9, 0), hm(20, 0))
+    zoned_window(Berlin(), hm(9, 0), hm(20, 0))
 }
 
 fn check(rule: &ZonedWindow, now: &str) -> RuleResult {
@@ -84,7 +90,7 @@ fn dst_fall_back_2026_10_25_berlin() {
 #[test]
 fn dst_ambiguous_start_uses_the_earlier_occurrence() {
     // 02:30 happens twice on 2026-10-25 in Berlin: 00:30Z (CEST) and 01:30Z (CET).
-    let rule = zoned_window(Berlin, hm(2, 30), hm(4, 0));
+    let rule = zoned_window(Berlin(), hm(2, 30), hm(4, 0));
     assert_eq!(
         rule.next_open(ts("2026-10-25T00:00:00.000Z")),
         Some(ts("2026-10-25T00:30:00.000Z"))
@@ -97,7 +103,7 @@ fn dst_ambiguous_start_uses_the_earlier_occurrence() {
 #[test]
 fn dst_spring_forward_gap_opens_at_the_transition() {
     // 2026-03-29: 02:00 CET jumps to 03:00 CEST at 01:00Z; 02:30 does not exist.
-    let rule = zoned_window(Berlin, hm(2, 30), hm(5, 0));
+    let rule = zoned_window(Berlin(), hm(2, 30), hm(5, 0));
     assert_eq!(
         rule.next_open(ts("2026-03-29T00:00:00.000Z")),
         Some(ts("2026-03-29T01:00:00.000Z"))
@@ -116,7 +122,7 @@ fn dst_spring_forward_gap_opens_at_the_transition() {
 #[test]
 fn weekdays_skip_to_next_allowed_day() {
     use Weekday::*;
-    let rule = business_hours().on_weekdays([Mon, Tue, Wed, Thu, Fri]);
+    let rule = business_hours().on_weekdays([Monday, Tuesday, Wednesday, Thursday, Friday]);
     // Saturday 2026-10-24 noon CEST → Monday 2026-10-26 09:00 CET = 08:00Z.
     assert_eq!(
         check(&rule, "2026-10-24T10:00:00.000Z"),
@@ -135,7 +141,7 @@ fn weekdays_skip_to_next_allowed_day() {
 fn weekday_is_evaluated_in_local_time_not_utc() {
     // Monday 2026-01-12 00:30 CET is Sunday 23:30Z: Monday-only window from
     // 00:00 local must be open even though the UTC weekday is Sunday.
-    let rule = zoned_window(Berlin, hm(0, 0), hm(1, 0)).on_weekdays([Weekday::Mon]);
+    let rule = zoned_window(Berlin(), hm(0, 0), hm(1, 0)).on_weekdays([Weekday::Monday]);
     assert!(rule.is_open(ts("2026-01-11T23:30:00.000Z")));
 }
 
@@ -143,7 +149,7 @@ fn weekday_is_evaluated_in_local_time_not_utc() {
 fn overnight_window_spans_midnight() {
     use Weekday::*;
     // Friday-night window 22:00–06:00, opening day Friday.
-    let rule = zoned_window(Berlin, hm(22, 0), hm(6, 0)).on_weekdays([Fri]);
+    let rule = zoned_window(Berlin(), hm(22, 0), hm(6, 0)).on_weekdays([Friday]);
     // Saturday 2026-01-17 03:00 CET (02:00Z) belongs to Friday's window.
     assert!(rule.is_open(ts("2026-01-17T02:00:00.000Z")));
     // Saturday 06:00 CET closes it.
@@ -176,5 +182,5 @@ fn no_weekdays_blocks_forever() {
 #[test]
 #[should_panic(expected = "start and end must differ")]
 fn equal_start_and_end_panics() {
-    let _ = zoned_window(Berlin, hm(9, 0), hm(9, 0));
+    let _ = zoned_window(Berlin(), hm(9, 0), hm(9, 0));
 }

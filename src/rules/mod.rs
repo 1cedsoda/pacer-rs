@@ -83,8 +83,3 @@ macro_rules! builder_methods {
     };
 }
 pub(crate) use builder_methods;
-
-pub(crate) fn assert_non_negative(value: i64, label: &str) -> i64 {
-    assert!(value >= 0, "{label} must be non-negative, got {value}");
-    value
-}

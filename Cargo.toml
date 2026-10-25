@@ -1,19 +1,22 @@
 [package]
 name = "pacer"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Small, synchronous pacing engine: can I do this now, and if not, when should I retry?"
 license = "MIT"
-repository = "https://github.com/1cedsoda/pacer-rs"
+repository = "https://github.com/traumventures/pacer-rs"
 readme = "README.md"
 keywords = ["rate-limit", "pacing", "quota", "backoff", "scheduling"]
 categories = ["algorithms", "date-and-time"]
 
 [features]
 default = []
-tz = ["dep:chrono", "dep:chrono-tz"]
+# Local calendars (zoned windows, local days) on jiff with a bundled tz database.
+tz = ["dep:jiff"]
+# Conversions between `Time` and chrono's `DateTime`.
+chrono = ["dep:chrono"]
 
 [dependencies]
+jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"], optional = true }
 chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }
-chrono-tz = { version = "0.10", optional = true }

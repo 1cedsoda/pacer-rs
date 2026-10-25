@@ -1,33 +1,37 @@
 use super::{Reason, ScopeFn, builder_methods};
-use crate::types::{Millis, Rule, RuleResult};
+use std::time::Duration;
+
+use crate::time::Time;
+use crate::types::{Rule, RuleResult};
 
 type AttemptsFn<C> = dyn Fn(&C, &str) -> u32 + Send + Sync;
-type LastFn<C> = dyn Fn(&C, &str) -> Option<Millis> + Send + Sync;
-type ReasonFn<C> = dyn Fn(&C, Millis, Millis, &str, u32, Millis) -> String + Send + Sync;
+type LastFn<C> = dyn Fn(&C, &str) -> Option<Time> + Send + Sync;
+type ReasonFn<C> = dyn Fn(&C, Time, Time, &str, u32, Duration) -> String + Send + Sync;
 
 /// Progressively longer waits between attempts. Build with [`backoff`].
 pub struct Backoff<C: ?Sized> {
     name: String,
     scope: ScopeFn<C>,
-    base_ms: Millis,
+    base: Duration,
     multiplier: f64,
-    max_ms: Option<Millis>,
+    max: Option<Duration>,
     get_attempts: Box<AttemptsFn<C>>,
     get_last_attempt_time: Box<LastFn<C>>,
     reason: Reason<ReasonFn<C>>,
 }
 
 /// Blocked until `last_attempt_time + delay(attempts)` with
-/// `delay = min(base_ms * multiplier^(attempts - 1), max_ms)`.
+/// `delay = min(base * multiplier^(attempts - 1), max)`.
 ///
 /// Zero attempts or no last attempt time → ready. Defaults: multiplier `2.0`,
-/// no cap. Panics if `base_ms <= 0`, `multiplier` is not a positive finite
-/// number, or `max_ms <= 0`. Default name `"backoff"`, default reason
+/// no cap. The delay is computed in microseconds and truncated. Panics if
+/// `base` is zero, `multiplier` is not a positive finite number, or `max` is
+/// zero. Default name `"backoff"`, default reason
 /// `"backoff active (attempt <n>, delay <round(delay/1000)>s)"`. Reason closure
-/// args: `(ctx, now, retry_at, scope, attempts, delay_ms)`.
+/// args: `(ctx, now, retry_at, scope, attempts, delay)`.
 pub fn backoff<C, S, A, L>(
     scope: S,
-    base_ms: Millis,
+    base: Duration,
     get_attempts: A,
     get_last_attempt_time: L,
 ) -> Backoff<C>
@@ -35,15 +39,15 @@ where
     C: ?Sized,
     S: Fn(&C) -> String + Send + Sync + 'static,
     A: Fn(&C, &str) -> u32 + Send + Sync + 'static,
-    L: Fn(&C, &str) -> Option<Millis> + Send + Sync + 'static,
+    L: Fn(&C, &str) -> Option<Time> + Send + Sync + 'static,
 {
-    assert!(base_ms > 0, "base_ms must be positive");
+    assert!(!base.is_zero(), "base must be positive");
     Backoff {
         name: "backoff".to_owned(),
         scope: Box::new(scope),
-        base_ms,
+        base,
         multiplier: 2.0,
-        max_ms: None,
+        max: None,
         get_attempts: Box::new(get_attempts),
         get_last_attempt_time: Box::new(get_last_attempt_time),
         reason: Reason::Default,
@@ -51,7 +55,7 @@ where
 }
 
 impl<C: ?Sized> Backoff<C> {
-    builder_methods!(&C, Millis, Millis, &str, u32, Millis);
+    builder_methods!(&C, Time, Time, &str, u32, Duration);
 
     /// Growth factor per attempt (default `2.0`; `1.0` = flat).
     pub fn multiplier(mut self, multiplier: f64) -> Self {
@@ -64,9 +68,9 @@ impl<C: ?Sized> Backoff<C> {
     }
 
     /// Upper bound on the computed delay.
-    pub fn max_ms(mut self, max_ms: Millis) -> Self {
-        assert!(max_ms > 0, "max_ms must be positive");
-        self.max_ms = Some(max_ms);
+    pub fn max(mut self, max: Duration) -> Self {
+        assert!(!max.is_zero(), "max must be positive");
+        self.max = Some(max);
         self
     }
 }
@@ -76,7 +80,7 @@ impl<C: ?Sized> Rule<C> for Backoff<C> {
         &self.name
     }
 
-    fn check(&self, ctx: &C, now: Millis) -> RuleResult {
+    fn check(&self, ctx: &C, now: Time) -> RuleResult {
         let scope = (self.scope)(ctx);
         let attempts = (self.get_attempts)(ctx, &scope);
         if attempts == 0 {
@@ -86,21 +90,22 @@ impl<C: ?Sized> Rule<C> for Backoff<C> {
             return RuleResult::Ready;
         };
 
-        let raw = self.base_ms as f64 * self.multiplier.powf(f64::from(attempts - 1));
-        let delay = self.max_ms.map_or(raw, |max| raw.min(max as f64));
-        // Like JS `new Date(ms)`: fractional milliseconds truncate; `as` saturates.
-        let delay_ms = delay.trunc() as Millis;
-        let retry_at = last.saturating_add(delay_ms);
+        let micros = |d: Duration| d.as_micros() as f64;
+        let raw = micros(self.base) * self.multiplier.powf(f64::from(attempts - 1));
+        let delay_us = self.max.map_or(raw, |max| raw.min(micros(max)));
+        // Fractional microseconds truncate; `as` saturates.
+        let delay = Duration::from_micros(delay_us.trunc() as u64);
+        let retry_at = last.saturating_add(delay);
         if now >= retry_at {
             return RuleResult::Ready;
         }
         RuleResult::blocked_until(
             retry_at,
             self.reason.resolve(
-                |f| f(ctx, now, retry_at, &scope, attempts, delay_ms),
+                |f| f(ctx, now, retry_at, &scope, attempts, delay),
                 || {
                     // JS Math.round: half rounds towards +infinity.
-                    let secs = (delay / 1000.0 + 0.5).floor();
+                    let secs = (delay_us / 1_000_000.0 + 0.5).floor();
                     format!("backoff active (attempt {attempts}, delay {secs}s)")
                 },
             ),
