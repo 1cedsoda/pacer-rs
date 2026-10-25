@@ -28,3 +28,7 @@ pub use rules::*;
 pub use types::{
     Block, FnRule, Millis, MillisFn, Rule, RuleResult, TimeWindow, Verdict, Wait, rule_fn,
 };
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;
