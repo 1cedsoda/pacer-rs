@@ -10,3 +10,10 @@ readme = "README.md"
 keywords = ["rate-limit", "pacing", "quota", "backoff", "scheduling"]
 categories = ["algorithms", "date-and-time"]
 
+[features]
+default = []
+tz = ["dep:chrono", "dep:chrono-tz"]
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }
+chrono-tz = { version = "0.10", optional = true }

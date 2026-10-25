@@ -11,8 +11,11 @@ mod dedupe;
 mod fixed_quota;
 mod fixed_window;
 mod min_gap;
+mod not_after;
 mod not_before;
 mod sliding_quota;
+#[cfg(feature = "tz")]
+mod zoned_window;
 
 pub use backoff::{Backoff, backoff};
 pub use concurrency_limit::{ConcurrencyLimit, concurrency_limit};
@@ -21,8 +24,11 @@ pub use dedupe::{Dedupe, dedupe};
 pub use fixed_quota::{FixedQuota, fixed_quota};
 pub use fixed_window::{FixedWindow, fixed_window};
 pub use min_gap::{MinGap, min_gap};
+pub use not_after::{NotAfter, not_after};
 pub use not_before::{NotBefore, not_before};
 pub use sliding_quota::{SlidingQuota, sliding_quota};
+#[cfg(feature = "tz")]
+pub use zoned_window::{ZonedWindow, zoned_window};
 
 /// Scope accessor: `Fn(&C) -> String`.
 pub(crate) type ScopeFn<C> = Box<dyn Fn(&C) -> String + Send + Sync>;
