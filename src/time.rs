@@ -194,6 +194,31 @@ impl From<Time> for chrono::DateTime<chrono::Utc> {
     }
 }
 
+/// RFC 3339 text, as [`Display`](fmt::Display) writes and
+/// [`FromStr`] reads it (feature `serde`).
+#[cfg(feature = "serde")]
+impl serde::Serialize for Time {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Time {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Time, D::Error> {
+        struct Visitor;
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = Time;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an RFC 3339 time")
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Time, E> {
+                v.parse().map_err(E::custom)
+            }
+        }
+        d.deserialize_str(Visitor)
+    }
+}
+
 /// RFC 3339 in UTC with as many fraction digits as needed
 /// (`2026-01-01T09:00:00Z`, `…:00.250Z`, `…:00.000001Z`).
 impl fmt::Display for Time {
@@ -367,6 +392,16 @@ mod tests {
         ] {
             assert!(bad.parse::<Time>().is_err(), "{bad}");
         }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_is_rfc3339() {
+        let t: Time = "2026-10-25T01:30:00.250Z".parse().unwrap();
+        let json = serde_json::to_string(&t).unwrap();
+        assert_eq!(json, "\"2026-10-25T01:30:00.250Z\"");
+        assert_eq!(serde_json::from_str::<Time>(&json).unwrap(), t);
+        assert!(serde_json::from_str::<Time>("\"x\"").is_err());
     }
 
     #[test]

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+- Feature `serde`: `Time` as an RFC 3339 string.
+
 ## 0.2.0
 
 Time has types now (breaking).

@@ -1,6 +1,6 @@
 [package]
 name = "pacer"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Small, synchronous pacing engine: can I do this now, and if not, when should I retry?"
@@ -16,7 +16,13 @@ default = []
 tz = ["dep:jiff"]
 # Conversions between `Time` and chrono's `DateTime`.
 chrono = ["dep:chrono"]
+# `Time` as an RFC 3339 string in serde formats.
+serde = ["dep:serde"]
 
 [dependencies]
+serde = { version = "1", default-features = false, features = ["std"], optional = true }
 jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"], optional = true }
 chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }
+
+[dev-dependencies]
+serde_json = "1"

@@ -21,7 +21,7 @@ pacer = { git = "https://github.com/traumventures/pacer-rs" }
 ```
 
 Features: `tz` (jiff, local calendars), `chrono` (conversions to and from
-chrono's `DateTime`).
+chrono's `DateTime`), `serde` (`Time` as an RFC 3339 string).
 
 ## Time
 
